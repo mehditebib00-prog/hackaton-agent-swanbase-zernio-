@@ -59,6 +59,16 @@ def list_webhooks() -> dict:
         return _check(c.get("/webhooks/settings"))
 
 
+def update_webhook_url(webhook_id: str, url: str) -> dict:
+    with _client() as c:
+        return _check(c.put("/webhooks/settings", json={"webhookId": webhook_id, "url": url}))
+
+
+def delete_webhook(webhook_id: str) -> dict:
+    with _client() as c:
+        return _check(c.delete("/webhooks/settings", params={"webhookId": webhook_id}))
+
+
 def send_test_webhook(webhook_id: str) -> dict:
     with _client() as c:
         return _check(c.post("/webhooks/test", json={"webhookId": webhook_id}))
@@ -108,6 +118,12 @@ def publish_post(content: str, targets: list[dict], media_urls: list[str]) -> di
     }
     with _client() as c:
         return _check(c.post("/posts", json=body, timeout=120))
+
+
+def get_post(post_id: str) -> dict:
+    with _client() as c:
+        res = _check(c.get(f"/posts/{post_id}"))
+    return res.get("post", res)
 
 
 def send_message(conversation_id: str, account_id: str, message: str) -> dict:

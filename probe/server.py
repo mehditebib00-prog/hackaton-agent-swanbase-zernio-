@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 
-from probe import zernio
+from concierge import zernio
 
 load_dotenv()
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")

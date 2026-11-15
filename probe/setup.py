@@ -5,6 +5,8 @@
   uv run python -m probe.setup register <https-url> # create webhook -> <url>/webhooks/zernio
   uv run python -m probe.setup webhooks            # list webhooks
   uv run python -m probe.setup test <webhook-id>   # send a webhook.test event
+  uv run python -m probe.setup update-url <webhook-id> <https-url>  # after a tunnel restart
+  uv run python -m probe.setup delete <webhook-id>
 """
 
 import os
@@ -37,7 +39,7 @@ def main() -> None:
         gen_secret()
         return
 
-    from probe import zernio
+    from concierge import zernio
 
     if cmd == "accounts":
         for a in zernio.list_accounts():
@@ -53,6 +55,12 @@ def main() -> None:
             print(w.get("_id"), w.get("url"), w.get("isActive"), w.get("events"))
     elif cmd == "test":
         print(zernio.send_test_webhook(args[0]))
+    elif cmd == "update-url":
+        res = zernio.update_webhook_url(args[0], f"{args[1].rstrip('/')}/webhooks/zernio")
+        w = res.get("webhook", res)
+        print("updated:", w.get("_id"), w.get("url"))
+    elif cmd == "delete":
+        print(zernio.delete_webhook(args[0]))
     else:
         print(__doc__)
 

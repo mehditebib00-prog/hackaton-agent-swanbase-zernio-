@@ -7,7 +7,7 @@ from pathlib import Path
 
 from PIL import Image, ImageDraw, ImageFont
 
-from probe import zernio
+from concierge import zernio
 
 OUT = Path(__file__).resolve().parent.parent / "data" / "test_post.jpg"
 CAPTION = (
