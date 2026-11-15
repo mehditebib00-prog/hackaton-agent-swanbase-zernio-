@@ -84,6 +84,32 @@ def public_reply(post_id: str, comment_id: str, account_id: str, message: str) -
         )
 
 
+def upload_media(path: str, content_type: str) -> str:
+    """Upload a local file via presigned URL; return its public URL."""
+    import pathlib
+
+    with _client() as c:
+        presign = _check(
+            c.post("/media/presign", json={"filename": pathlib.Path(path).name, "contentType": content_type})
+        )
+    with open(path, "rb") as f:
+        put = httpx.put(presign["uploadUrl"], content=f.read(), headers={"Content-Type": content_type}, timeout=60)
+    if put.status_code >= 400:
+        raise RuntimeError(f"media upload failed: {put.status_code}")
+    return presign["publicUrl"]
+
+
+def publish_post(content: str, targets: list[dict], media_urls: list[str]) -> dict:
+    body = {
+        "content": content,
+        "publishNow": True,
+        "platforms": targets,
+        "mediaItems": [{"type": "image", "url": u} for u in media_urls],
+    }
+    with _client() as c:
+        return _check(c.post("/posts", json=body, timeout=120))
+
+
 def send_message(conversation_id: str, account_id: str, message: str) -> dict:
     with _client() as c:
         return _check(
