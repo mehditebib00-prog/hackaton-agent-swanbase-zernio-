@@ -94,21 +94,42 @@ def draft_post(photo: bytes, note: str, qa: str, feedback: str | None = None) ->
 
 # ---------- engagement ----------
 
+GROUNDING = (
+    "GROUNDING RULES: State only facts found in the KNOWLEDGE BASE or EVENT INFO below. Never invent people, "
+    "projects, dates, prices or links. If something is not covered, say you don't know and point to the closest "
+    "thing you do know. Use only URLs that appear verbatim below; any other URL will be deleted before sending. "
+    "Never repeat a URL listed under LINKS ALREADY SENT; refer to it by name instead."
+)
+
+CTA_RULES = (
+    "NEXT STEP: when the person shows interest in building, startups, growth, events or 'what's next', offer the "
+    "highest-priority next step from EVENT INFO (one at a time, with its link, at most once per conversation). "
+    "Mention a deadline only if EVENT INFO states it."
+)
+
+
+def _context_block(kb: str, sent_links: set[str]) -> str:
+    from concierge import event_info
+
+    sent = "\n".join(sorted(sent_links)) or "(none)"
+    return f"\n\nKNOWLEDGE BASE:\n{kb}\n\nEVENT INFO:\n{event_info.event_block()}\n\nLINKS ALREADY SENT:\n{sent}"
+
+
 class CommentReply(BaseModel):
     wants_dm: bool = Field(description="True unless the comment is spam, hostile or from a bot")
     public_reply: str = Field(description="Short friendly public reply, max 20 words, mentions to check DMs if wants_dm")
     dm: str = Field(description="Personal DM, see rules")
-    interests: list[str] = Field(description="1-3 lowercase interest tags inferred from the comment")
+    interests: list[str] = Field(description="1-3 lowercase singular interest tags inferred from the comment")
 
 
-def comment_reply(comment: str, username: str | None, post_caption: str | None, kb: str) -> CommentReply:
+def comment_reply(comment: str, username: str | None, post_caption: str | None, kb: str, sent_links: set[str] | None = None) -> CommentReply:
     system = (
         EVENT_CONTEXT + "\nSomeone commented on one of our Instagram posts. Write a public reply and a private DM. "
         "DM rules: greet by name if known; react to what they actually wrote; recommend the 2 most relevant "
         "projects from the knowledge base with one line each (why it matches them) and their post link; "
         "invite them to reply with a question about any project or topic. Plain text, max 600 characters, "
         "no markdown. If the knowledge base is empty, explain we are interviewing teams live today and ask what "
-        "they are curious about.\n\nKNOWLEDGE BASE:\n" + kb
+        "they are curious about.\n" + GROUNDING + "\n" + CTA_RULES + _context_block(kb, sent_links or set())
     )
     text = f"Post caption: {post_caption or '(unknown)'}\nCommenter: @{username or 'unknown'}\nComment: {comment}"
     return _parse(CommentReply, system, text)
@@ -116,15 +137,16 @@ def comment_reply(comment: str, username: str | None, post_caption: str | None, 
 
 class DmAnswer(BaseModel):
     reply: str = Field(description="Answer, plain text, max 700 characters")
-    interests: list[str] = Field(description="1-3 lowercase interest tags inferred from the message")
+    interests: list[str] = Field(description="1-3 lowercase singular interest tags inferred from the message")
+    wants_human: bool = Field(description="True if the person asks to talk to a human / the organizers / a real person")
 
 
-def dm_answer(history: list[dict], message: str, username: str | None, kb: str) -> DmAnswer:
+def dm_answer(history: list[dict], message: str, username: str | None, kb: str, sent_links: set[str] | None = None) -> DmAnswer:
     system = (
-        EVENT_CONTEXT + "\nYou are chatting in Instagram DMs. Answer only from the knowledge base about the "
-        "hackathon projects (who built what, which tools, links). If asked something not covered, say so "
-        "and suggest the closest project. Be warm and concise, plain text, no markdown. "
-        "When relevant, name the team and give the post link.\n\nKNOWLEDGE BASE:\n" + kb
+        EVENT_CONTEXT + "\nYou are chatting in Instagram DMs about the hackathon projects (who built what, which "
+        "tools) and swanbase's next steps. Be warm and concise, plain text, no markdown, don't restate what you "
+        "already said earlier in the conversation. If they ask for a human, set wants_human and tell them an "
+        "organizer will reply here soon.\n" + GROUNDING + "\n" + CTA_RULES + _context_block(kb, sent_links or set())
     )
     convo = "\n".join(f"{m['role']}: {m['text']}" for m in history)
     text = f"Conversation so far:\n{convo or '(none)'}\n\nNew message from @{username or 'unknown'}: {message}"

@@ -18,7 +18,7 @@ load_dotenv(override=True)  # project .env wins over stale shell vars
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines include the bot token URL
 
-from concierge import bot, llm, store, zernio  # noqa: E402
+from concierge import bot, guard, llm, store, zernio  # noqa: E402
 
 log = logging.getLogger("app")
 _seen: set[str] = set()
@@ -72,14 +72,20 @@ def _latency(ts: str | None) -> float | None:
         return None
 
 
+DAILY_REPLY_CAP = 30
+
+
 def handle_comment(event: dict) -> None:
     c = event["comment"]
     author = c.get("author") or {}
     if author.get("isOwnAccount"):
         return
-    username = author.get("username")
+    username, uid = author.get("username"), author.get("id")
     log.info("comment from=@%s latency=%ss text=%r", username, _latency(c.get("createdAt")), c.get("text"))
     if c.get("platform") not in ("instagram", "facebook"):
+        return
+    if store.replies_last_24h(username, uid) >= DAILY_REPLY_CAP:
+        log.warning("daily cap reached for @%s; skipping", username)
         return
     post_id = c.get("postId") or c["platformPostId"]
     caption = None
@@ -88,16 +94,23 @@ def handle_comment(event: dict) -> None:
             caption = zernio.get_post(c["postId"]).get("content")
         except Exception:  # noqa: BLE001
             caption = None
+    sent = store.sent_links(username, uid)
     try:
-        r = llm.comment_reply(c.get("text", ""), username, caption, store.knowledge_base())
+        r = llm.comment_reply(c.get("text", ""), username, caption, store.knowledge_base(), sent)
         dm, public, interests, wants_dm = r.dm, r.public_reply, r.interests, r.wants_dm
     except Exception as e:  # noqa: BLE001
         log.error("comment_reply LLM failed: %s", e)
         dm, public, interests, wants_dm = FALLBACK_DM.format(name=author.get("name") or username or "there"), "Thanks! Check your DMs.", [], True
+    dm, removed = guard.clean(dm, sent)
+    public, removed_pub = guard.clean(public, set())
+    if removed or removed_pub:
+        log.warning("guard removed links: %s", removed + removed_pub)
     account_id = _account()
     if wants_dm:
         try:
             zernio.private_reply(post_id, c["id"], account_id, dm)
+            store.record_sent(username, uid, guard.urls_in(dm))
+            store.count_reply(username, uid)
             log.info("private reply sent to @%s", username)
         except Exception as e:  # noqa: BLE001
             log.error("private reply failed: %s", e)
@@ -105,7 +118,7 @@ def handle_comment(event: dict) -> None:
         zernio.public_reply(post_id, c["id"], account_id, public)
     except Exception as e:  # noqa: BLE001
         log.error("public reply failed: %s", e)
-    store.upsert_lead("instagram", author.get("id", "?"), username, interests, c.get("text", ""))
+    store.upsert_lead("instagram", uid or "?", username, interests, c.get("text", ""))
     bot.notify_owner(f"💬 @{username} commented: {c.get('text')}\n→ interests: {', '.join(interests) or '-'}\n→ DM sent: {wants_dm}")
 
 
@@ -117,25 +130,42 @@ def handle_message(event: dict) -> None:
     if not text.strip():
         return
     sender = m.get("sender") or {}
-    username = sender.get("username")
+    username, uid = sender.get("username"), sender.get("id")
     conv = m["conversationId"]
     account_id = (event.get("account") or {}).get("accountId") or _account()
     log.info("dm from=@%s latency=%ss text=%r", username, _latency(m.get("sentAt")), text)
     history = store.dm_history(conv)
     store.add_dm(conv, "user", text)
+    if store.is_handed_off(username, uid):
+        bot.notify_owner(f"🙋 (human mode) @{username}: {text}\nReply in the Zernio inbox. /resume {username} to hand back to the bot.")
+        return
+    if store.replies_last_24h(username, uid) >= DAILY_REPLY_CAP:
+        log.warning("daily cap reached for @%s; skipping", username)
+        return
+    sent = store.sent_links(username, uid)
+    wants_human = False
     try:
-        r = llm.dm_answer(history, text, username, store.knowledge_base())
-        reply, interests = r.reply, r.interests
+        r = llm.dm_answer(history, text, username, store.knowledge_base(), sent)
+        reply, interests, wants_human = r.reply, r.interests, r.wants_human
     except Exception as e:  # noqa: BLE001
         log.error("dm_answer LLM failed: %s", e)
         reply, interests = "Thanks for your message! I'll get back to you shortly.", []
+    reply, removed = guard.clean(reply, sent)
+    if removed:
+        log.warning("guard removed links: %s", removed)
     try:
         zernio.send_message(conv, account_id, reply)
         store.add_dm(conv, "assistant", reply)
+        store.record_sent(username, uid, guard.urls_in(reply))
+        store.count_reply(username, uid)
     except Exception as e:  # noqa: BLE001
         log.error("dm send failed: %s", e)
-    store.upsert_lead("instagram", sender.get("id", "?"), username, interests, text)
-    bot.notify_owner(f"✉️ @{username}: {text}\n🤖 {reply[:300]}")
+    store.upsert_lead("instagram", uid or "?", username, interests, text)
+    if wants_human:
+        store.set_handoff(username, uid, True)
+        bot.notify_owner(f"🙋 @{username} asked for a human: {text}\nAuto-replies paused for them. Answer in the Zernio inbox; /resume {username} to hand back.")
+    else:
+        bot.notify_owner(f"✉️ @{username}: {text}\n🤖 {reply[:300]}")
 
 
 @app.get("/health")

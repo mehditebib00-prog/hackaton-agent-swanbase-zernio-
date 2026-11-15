@@ -147,3 +147,86 @@ def dm_history(conversation_id: str, limit: int = 12) -> list[dict]:
         (conversation_id, limit),
     ).fetchall()
     return [dict(r) for r in reversed(rows)]
+
+
+# ---------- guardrails state ----------
+
+_db.executescript(
+    """
+    CREATE TABLE IF NOT EXISTS sent_links (person TEXT, url TEXT, ts REAL, PRIMARY KEY (person, url));
+    CREATE TABLE IF NOT EXISTS auto_replies (person TEXT, ts REAL);
+    """
+)
+_db.commit()
+
+
+def _person(username: str | None, user_id: str | None) -> str:
+    # Comment author ids and DM sender ids can differ on Instagram; the username is shared by both.
+    return f"u:{username.lower()}" if username else f"id:{user_id}"
+
+
+def sent_links(username: str | None, user_id: str | None) -> set[str]:
+    rows = _db.execute("SELECT url FROM sent_links WHERE person=?", (_person(username, user_id),)).fetchall()
+    return {r["url"] for r in rows}
+
+
+def record_sent(username: str | None, user_id: str | None, urls: set[str]) -> None:
+    with _lock:
+        for u in urls:
+            _db.execute("INSERT OR IGNORE INTO sent_links VALUES (?,?,?)", (_person(username, user_id), u, time.time()))
+        _db.commit()
+
+
+def replies_last_24h(username: str | None, user_id: str | None) -> int:
+    row = _db.execute(
+        "SELECT COUNT(*) AS n FROM auto_replies WHERE person=? AND ts>?",
+        (_person(username, user_id), time.time() - 86400),
+    ).fetchone()
+    return int(row["n"])
+
+
+def count_reply(username: str | None, user_id: str | None) -> None:
+    with _lock:
+        _db.execute("INSERT INTO auto_replies VALUES (?,?)", (_person(username, user_id), time.time()))
+        _db.commit()
+
+
+def is_handed_off(username: str | None, user_id: str | None) -> bool:
+    return get_setting(f"handoff:{_person(username, user_id)}") == "1"
+
+
+def set_handoff(username: str | None, user_id: str | None, on: bool) -> None:
+    set_setting(f"handoff:{_person(username, user_id)}", "1" if on else "0")
+
+
+def allowed_ids() -> set[int]:
+    raw = get_setting("telegram_allowed_ids")
+    return set(json.loads(raw)) if raw else set()
+
+
+def allow_id(user_id: int) -> None:
+    ids = allowed_ids() | {user_id}
+    set_setting("telegram_allowed_ids", json.dumps(sorted(ids)))
+
+
+def _csv_safe(v):
+    """Neutralise spreadsheet formulas in text written by Instagram users."""
+    if isinstance(v, str) and v[:1] in ("=", "+", "-", "@", "\t", "\r"):
+        return "'" + v
+    return v
+
+
+def export_csv() -> dict[str, bytes]:
+    import csv
+    import io
+
+    out = {}
+    for name, rows in (("interviews.csv", published_interviews()), ("leads.csv", leads())):
+        buf = io.StringIO()
+        if rows:
+            w = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
+            w.writeheader()
+            for r in rows:
+                w.writerow({k: _csv_safe(json.dumps(v) if isinstance(v, list) else v) for k, v in r.items()})
+        out[name] = buf.getvalue().encode()
+    return out
