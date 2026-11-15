@@ -101,7 +101,7 @@ concierge/
   dashboard.py/.html  Local-only live dashboard
   media.py        Instagram image prep and recap collage
   zernio.py       Zernio REST client
-probe/            Setup CLI (webhooks, accounts, secret) and the first experiments
+probe/            Setup CLI: webhooks, accounts, webhook secret
 tests/            pytest suite (no network, no live database writes)
 ```
 
