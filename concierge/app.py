@@ -20,7 +20,7 @@ load_dotenv(override=True)  # project .env wins over stale shell vars
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines include the bot token URL
 
-from concierge import bot, contacts, guard, llm, store, zernio  # noqa: E402
+from concierge import bot, contacts, dashboard, guard, llm, store, zernio  # noqa: E402
 
 log = logging.getLogger("app")
 _seen: set[str] = set()
@@ -78,6 +78,7 @@ async def lifespan(_: FastAPI):
 
 
 app = FastAPI(lifespan=lifespan)
+app.include_router(dashboard.router)
 
 
 def _account() -> str:
@@ -111,6 +112,7 @@ def handle_comment(event: dict) -> None:
         return
     username, uid = author.get("username"), author.get("id")
     log.info("comment from=@%s latency=%ss text=%r", username, _latency(c.get("createdAt")), c.get("text"))
+    store.log_event("comment", username, f"commented “{c.get('text', '')[:80]}”", _latency(c.get("createdAt")))
     if c.get("platform") not in ("instagram", "facebook"):
         return
     if store.replies_last_24h(username, uid) >= DAILY_REPLY_CAP:
@@ -138,6 +140,7 @@ def handle_comment(event: dict) -> None:
     if wants_dm:
         try:
             zernio.private_reply(post_id, c["id"], account_id, dm)
+            store.log_event("comment_dm", username, f"commented “{c.get('text', '')[:80]}” → personal DM sent", _latency(c.get("createdAt")))
             store.record_sent(username, uid, guard.urls_in(dm))
             store.count_reply(username, uid)
             log.info("private reply sent to @%s", username)
@@ -173,6 +176,7 @@ def _handle_contact(r, reply: str, text: str, username: str | None, uid: str | N
     if team_id:
         iv = store.interview(team_id)
         if iv and iv.get("contact_public") and contacts.is_valid(iv.get("contact")):
+            store.log_event("contact_shared", username, f"got {iv['team']}'s public contact")
             return f"{reply}\n\n{iv['team']} ({iv['project']}): {iv['contact']}"
         if iv:
             store.set_pending_intro(username, uid, team_id)
@@ -183,6 +187,7 @@ def _handle_contact(r, reply: str, text: str, username: str | None, uid: str | N
         iv = store.interview(target)
         if iv and not (iv.get("contact_public") and contacts.is_valid(iv.get("contact"))):
             store.add_intro(target, iv["team"], username, given, text)
+            store.log_event("intro", username, f"asked for an intro to {iv['team']}")
             store.set_pending_intro(username, uid, None)
             bot.notify_owner(f"🤝 Intro request for {iv['team']} ({iv['project']})\nFrom @{username}: {given}\n“{text[:200]}”")
     return reply
@@ -212,6 +217,7 @@ def handle_message(event: dict) -> None:
     loop = loop_reason(history, text)
     if loop:
         log.warning("loop guard: not replying to @%s (%s)", username, loop)
+        store.log_event("loop_blocked", username, loop)
         flag = f"loop_notified:{conv}"
         if not store.get_setting(flag):
             store.set_setting(flag, "1")
@@ -239,6 +245,7 @@ def handle_message(event: dict) -> None:
     reply = _handle_contact(r if not isinstance(r, Exception) else None, reply, text, username, uid)
     try:
         zernio.send_message(conv, account_id, reply)
+        store.log_event("dm_reply", username, f"asked “{text[:80]}” → answered", _latency(m.get("sentAt")))
         store.add_dm(conv, "assistant", reply)
         store.record_sent(username, uid, guard.urls_in(reply))
         store.count_reply(username, uid)
@@ -247,6 +254,7 @@ def handle_message(event: dict) -> None:
     store.upsert_lead("instagram", uid or "?", username, interests, text)
     if wants_human:
         store.set_handoff(username, uid, True)
+        store.log_event("handoff", username, "asked for a human; auto-replies paused")
         bot.notify_owner(f"🙋 @{username} asked for a human: {text}\nAuto-replies paused for them. Answer in the Zernio inbox; /resume {username} to hand back.")
     else:
         bot.notify_owner(f"✉️ @{username}: {text}\n🤖 {reply[:300]}")

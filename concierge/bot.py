@@ -267,6 +267,9 @@ async def _publish(msg, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         return
     if interview_id is not None:
         store.mark_published(interview_id, post_id, url, caption)
+        store.log_event("published", None, f"{d['draft']['team']} — {d['draft']['project']} is live on Instagram")
+    else:
+        store.log_event("published", None, "End-of-day recap is live on Instagram")
     d.clear()
     await msg.reply_text(f"Live ✅ {url or post_id}\nComments and DMs on it are now handled by the concierge.")
 

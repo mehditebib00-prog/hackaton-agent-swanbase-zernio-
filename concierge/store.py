@@ -293,3 +293,54 @@ def set_contact(interview_id: int, contact: str | None) -> None:
             (contact, 1 if contact else 0, interview_id),
         )
         _db.commit()
+
+
+# ---------- activity feed (dashboard) ----------
+
+_db.execute(
+    """CREATE TABLE IF NOT EXISTS events (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL, kind TEXT, who TEXT, detail TEXT, latency REAL)"""
+)
+_db.commit()
+
+
+def log_event(kind: str, who: str | None, detail: str, latency: float | None = None) -> None:
+    with _lock:
+        _db.execute(
+            "INSERT INTO events (ts, kind, who, detail, latency) VALUES (?,?,?,?,?)",
+            (time.time(), kind, who, detail[:300], latency),
+        )
+        _db.commit()
+
+
+def dashboard_data() -> dict:
+    def q(sql: str, *a):
+        return _db.execute(sql, a).fetchall()
+
+    items = published_interviews()
+    lead_rows = leads()
+    interests: dict[str, int] = {}
+    for lead in lead_rows:
+        for t in lead["interests"]:
+            interests[t] = interests.get(t, 0) + 1
+    lat = q("SELECT latency FROM events WHERE kind='comment_dm' AND latency IS NOT NULL")
+    lats = sorted(r["latency"] for r in lat)
+    return {
+        "stats": {
+            "teams": len(items),
+            "people": len(lead_rows),
+            "dms": q("SELECT COUNT(*) n FROM events WHERE kind IN ('comment_dm','dm_reply')")[0]["n"],
+            "intros": q("SELECT COUNT(*) n FROM intro_requests")[0]["n"],
+            "contacts_shared": q("SELECT COUNT(*) n FROM events WHERE kind='contact_shared'")[0]["n"],
+            "median_comment_to_dm": lats[len(lats) // 2] if lats else None,
+        },
+        "teams": [
+            {
+                "id": i["id"], "team": i["team"], "project": i["project"], "one_liner": i["one_liner"],
+                "tags": i["tags"], "url": i["ig_url"], "contact_public": bool(i.get("contact_public")),
+            }
+            for i in reversed(items)
+        ],
+        "interests": sorted(interests.items(), key=lambda kv: -kv[1])[:10],
+        "feed": [dict(r) for r in q("SELECT ts, kind, who, detail, latency FROM events ORDER BY id DESC LIMIT 25")],
+    }
