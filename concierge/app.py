@@ -3,6 +3,7 @@
 Run:  uv run uvicorn concierge.app:app --port 8000
 """
 
+import asyncio
 import hashlib
 import hmac
 import json
@@ -31,17 +32,44 @@ FALLBACK_DM = (
 )
 
 
+TG_MAX_ATTEMPTS = 30          # ~25 min of retries at most
+TG_BACKOFF = (5, 10, 20, 40, 60)
+
+
+async def run_telegram(state: dict) -> None:
+    """Start the Telegram bot with retries; never takes the webhook server down with it."""
+    for attempt in range(1, TG_MAX_ATTEMPTS + 1):
+        tg = bot.build_application()
+        try:
+            await tg.initialize()
+            await tg.start()
+            if tg.updater:
+                await tg.updater.start_polling(drop_pending_updates=True)
+            state["tg"] = tg
+            log.info("telegram bot polling (attempt %d)", attempt)
+            return
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 - network errors at startup are expected on bad wifi
+            delay = TG_BACKOFF[min(attempt - 1, len(TG_BACKOFF) - 1)]
+            log.warning("telegram start failed (attempt %d/%d): %s; retrying in %ss",
+                        attempt, TG_MAX_ATTEMPTS, type(e).__name__, delay)
+            try:
+                await tg.shutdown()
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(delay)
+    log.error("telegram bot gave up after %d attempts; Instagram webhooks keep running", TG_MAX_ATTEMPTS)
+
+
 @asynccontextmanager
 async def lifespan(_: FastAPI):
-    tg = None
-    if os.environ.get("TELEGRAM_BOT_TOKEN"):
-        tg = bot.build_application()
-        await tg.initialize()
-        await tg.start()
-        if tg.updater:
-            await tg.updater.start_polling(drop_pending_updates=True)
-        log.info("telegram bot polling")
+    state: dict = {}
+    task = asyncio.create_task(run_telegram(state)) if os.environ.get("TELEGRAM_BOT_TOKEN") else None
     yield
+    if task and not task.done():
+        task.cancel()
+    tg = state.get("tg")
     if tg:
         if tg.updater:
             await tg.updater.stop()
