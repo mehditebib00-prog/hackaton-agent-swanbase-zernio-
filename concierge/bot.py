@@ -22,7 +22,7 @@ from telegram.ext import (
     filters,
 )
 
-from concierge import event_info, llm, media, store, zernio
+from concierge import contacts, event_info, llm, media, store, zernio
 
 log = logging.getLogger("bot")
 OWNER_KEY = "telegram_owner_id"
@@ -206,9 +206,22 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         await _ask_followups(msg, ctx)
     elif stage == "contact":
         answer = msg.text.strip()
-        public = answer.lower().strip(" .!") not in SKIP_WORDS
-        ctx.chat_data.update(contact=answer if public else None, contact_public=public)
-        await msg.reply_text("Contact saved, shared on request ✅" if public else "OK, kept private. Intro requests will come to you here.")
+        if answer.lower().strip(" .!") in SKIP_WORDS:
+            ctx.chat_data.update(contact=None, contact_public=False)
+            await msg.reply_text("OK, kept private. Intro requests will come to you here.")
+            await _draft(msg, ctx)
+            return
+        items = contacts.extract(answer)
+        if not items:
+            # e.g. they answered "Email" or "LinkedIn": ask for the actual address/link
+            await msg.reply_text(
+                "I need the actual contact to share, e.g. name@company.com or a linkedin.com/in/... link "
+                "(or 'skip' to keep it private)."
+            )
+            return
+        contact = " · ".join(items)
+        ctx.chat_data.update(contact=contact, contact_public=True)
+        await msg.reply_text(f"Contact saved, shared on request ✅\n{contact}")
         await _draft(msg, ctx)
     elif stage == "rewrite":
         await _draft(msg, ctx, feedback=msg.text)
@@ -348,6 +361,40 @@ async def style(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await msg.reply_text(f"Interview style set to: {event_info.STYLE_PRESETS.get(arg, arg)}")
 
 
+async def contact_cmd(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """/contact -> list teams; /contact <id> <email/link...> sets it; /contact <id> none makes it private."""
+    msg = update.message
+    if not _is_member(update) or msg is None:
+        return
+    args = ctx.args or []
+    if not args:
+        lines = [
+            f"{i['id']}. {i['team']} — {i['contact'] if i.get('contact_public') and contacts.is_valid(i.get('contact')) else 'private'}"
+            for i in store.published_interviews()
+        ]
+        await msg.reply_text("Teams:\n" + ("\n".join(lines) or "(none)") + "\n\n/contact <id> <email or link>  ·  /contact <id> none")
+        return
+    try:
+        iid = int(args[0])
+    except ValueError:
+        await msg.reply_text("Usage: /contact <id> <email or link>  ·  /contact <id> none")
+        return
+    if store.interview(iid) is None:
+        await msg.reply_text(f"No published team with id {iid}.")
+        return
+    rest = " ".join(args[1:]).strip()
+    if rest.lower() in SKIP_WORDS or not rest:
+        store.set_contact(iid, None)
+        await msg.reply_text(f"Team {iid} contact is now private (intro requests only).")
+        return
+    items = contacts.extract(rest)
+    if not items:
+        await msg.reply_text("That doesn't look like an email, link, @handle or phone number.")
+        return
+    store.set_contact(iid, " · ".join(items))
+    await msg.reply_text(f"Team {iid} contact set ✅ {' · '.join(items)}")
+
+
 def build_application() -> Application:
     app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).build()
     app.add_handler(CommandHandler("start", start))
@@ -359,6 +406,7 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("export", export))
     app.add_handler(CommandHandler("done", done))
     app.add_handler(CommandHandler("style", style))
+    app.add_handler(CommandHandler("contact", contact_cmd))
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     app.add_handler(CallbackQueryHandler(on_button))

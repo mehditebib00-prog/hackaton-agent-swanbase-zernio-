@@ -18,7 +18,7 @@ load_dotenv(override=True)  # project .env wins over stale shell vars
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines include the bot token URL
 
-from concierge import bot, guard, llm, store, zernio  # noqa: E402
+from concierge import bot, contacts, guard, llm, store, zernio  # noqa: E402
 
 log = logging.getLogger("app")
 _seen: set[str] = set()
@@ -129,7 +129,7 @@ def _handle_contact(r, reply: str, text: str, username: str | None, uid: str | N
     team_id = r.contact_team_id
     if team_id:
         iv = store.interview(team_id)
-        if iv and iv.get("contact_public") and iv.get("contact"):
+        if iv and iv.get("contact_public") and contacts.is_valid(iv.get("contact")):
             return f"{reply}\n\n{iv['team']} ({iv['project']}): {iv['contact']}"
         if iv:
             store.set_pending_intro(username, uid, team_id)
@@ -138,7 +138,7 @@ def _handle_contact(r, reply: str, text: str, username: str | None, uid: str | N
     # Only accept a contact the person actually typed in this message.
     if target and given and given.lower() in text.lower():
         iv = store.interview(target)
-        if iv and not iv.get("contact_public"):
+        if iv and not (iv.get("contact_public") and contacts.is_valid(iv.get("contact"))):
             store.add_intro(target, iv["team"], username, given, text)
             store.set_pending_intro(username, uid, None)
             bot.notify_owner(f"🤝 Intro request for {iv['team']} ({iv['project']})\nFrom @{username}: {given}\n“{text[:200]}”")

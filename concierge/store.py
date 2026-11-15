@@ -94,6 +94,12 @@ def published_interviews() -> list[dict]:
     return out
 
 
+def _usable(contact: str | None) -> bool:
+    from concierge import contacts
+
+    return contacts.is_valid(contact)
+
+
 def knowledge_base() -> str:
     """Compact text of every published interview, for the LLM context."""
     items = published_interviews()
@@ -105,7 +111,7 @@ def knowledge_base() -> str:
             f"[{i['id']}] Team: {i['team']} | Project: {i['project']} | {i['one_liner']}\n"
             f"    AI tools: {', '.join(i['ai_tools'])} | Hardest part: {i['challenge']}\n"
             f"    Quote: \"{i['quote']}\" | Tags: {', '.join(i['tags'])} | Post: {i['ig_url'] or 'n/a'}\n"
-            f"    Contact: {'shared publicly (the system appends it)' if i.get('contact_public') else 'not public (offer an intro)'}"
+            f"    Contact: {'shared publicly (the system appends it)' if i.get('contact_public') and _usable(i.get('contact')) else 'not public (offer an intro)'}"
         )
     return "\n".join(lines)
 
@@ -278,3 +284,12 @@ def set_pending_intro(username: str | None, user_id: str | None, interview_id: i
 def pending_intro(username: str | None, user_id: str | None) -> int | None:
     v = get_setting(f"pending_intro:{_person(username, user_id)}")
     return int(v) if v else None
+
+
+def set_contact(interview_id: int, contact: str | None) -> None:
+    with _lock:
+        _db.execute(
+            "UPDATE interviews SET contact=?, contact_public=? WHERE id=?",
+            (contact, 1 if contact else 0, interview_id),
+        )
+        _db.commit()
