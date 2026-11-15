@@ -14,7 +14,7 @@ from datetime import UTC, datetime
 from dotenv import load_dotenv
 from fastapi import BackgroundTasks, FastAPI, Request, Response
 
-load_dotenv()
+load_dotenv(override=True)  # project .env wins over stale shell vars
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
 logging.getLogger("httpx").setLevel(logging.WARNING)  # its INFO lines include the bot token URL
 

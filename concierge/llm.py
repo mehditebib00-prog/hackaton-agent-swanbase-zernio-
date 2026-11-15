@@ -8,7 +8,7 @@ import anthropic
 from dotenv import load_dotenv
 from pydantic import BaseModel, Field
 
-load_dotenv()
+load_dotenv(override=True)  # project .env wins over stale shell vars
 log = logging.getLogger("llm")
 
 MODEL = "claude-opus-5-5"

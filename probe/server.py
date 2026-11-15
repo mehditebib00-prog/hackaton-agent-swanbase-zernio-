@@ -18,7 +18,7 @@ from fastapi import BackgroundTasks, FastAPI, Request, Response
 
 from concierge import zernio
 
-load_dotenv()
+load_dotenv(override=True)  # project .env wins over stale shell vars
 logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 log = logging.getLogger("probe")
 

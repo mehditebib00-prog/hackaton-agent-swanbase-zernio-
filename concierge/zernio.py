@@ -5,7 +5,7 @@ import os
 import httpx
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(override=True)  # project .env wins over stale shell vars
 
 BASE_URL = "https://zernio.com/api/v1"
 
