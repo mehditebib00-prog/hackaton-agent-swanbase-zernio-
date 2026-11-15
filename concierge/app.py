@@ -8,6 +8,7 @@ import hmac
 import json
 import logging
 import os
+import re
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 
@@ -122,6 +123,20 @@ def handle_comment(event: dict) -> None:
     bot.notify_owner(f"💬 @{username} commented: {c.get('text')}\n→ interests: {', '.join(interests) or '-'}\n→ DM sent: {wants_dm}")
 
 
+BOT_MARKERS = re.compile(r"^\s*[\[(](echo|bot|auto|automated|test)\b|^\s*(echo|auto-?reply)\s*:", re.I)
+
+
+def loop_reason(history: list[dict], text: str) -> str | None:
+    """Why we should NOT answer this DM (another bot / repeated message), or None."""
+    t = text.strip()
+    if BOT_MARKERS.search(t):
+        return "message looks automated"
+    previous_user = [m["text"].strip() for m in history if m["role"] == "user"]
+    if previous_user and previous_user[-1] == t:
+        return "same message repeated"
+    return None
+
+
 def _handle_contact(r, reply: str, text: str, username: str | None, uid: str | None) -> str:
     """Share a team's public contact (exact, from the DB) or record an intro request."""
     if r is None:
@@ -166,6 +181,15 @@ def handle_message(event: dict) -> None:
         log.warning("zernio history failed, using local copy: %s", e)
         history = store.dm_history(conv)
     store.add_dm(conv, "user", text)
+    loop = loop_reason(history, text)
+    if loop:
+        log.warning("loop guard: not replying to @%s (%s)", username, loop)
+        flag = f"loop_notified:{conv}"
+        if not store.get_setting(flag):
+            store.set_setting(flag, "1")
+            bot.notify_owner(f"🔁 Stopped auto-replying to @{username}: {loop}.\nLast message: {text[:200]}\nIt resumes by itself when they send something new.")
+        return
+    store.set_setting(f"loop_notified:{conv}", "")
     if store.is_handed_off(username, uid):
         bot.notify_owner(f"🙋 (human mode) @{username}: {text}\nReply in the Zernio inbox. /resume {username} to hand back to the bot.")
         return
