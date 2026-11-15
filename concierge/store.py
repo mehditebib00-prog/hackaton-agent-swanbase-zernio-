@@ -313,6 +313,37 @@ def log_event(kind: str, who: str | None, detail: str, latency: float | None = N
         _db.commit()
 
 
+def _contacts_shared() -> int:
+    """Agent DMs that carried a team's public contact line (appended verbatim by the app)."""
+    teams = [i for i in published_interviews() if i.get("contact_public") and _usable(i.get("contact"))]
+    n = 0
+    for (text,) in _db.execute("SELECT text FROM dm_messages WHERE role='assistant'").fetchall():
+        if any(f"{i['team']} ({i['project']}): {i['contact']}" in (text or "") for i in teams):
+            n += 1
+    return n
+
+
+def backfill_dm_events() -> int:
+    """One-time: put DM replies sent before the dashboard existed into the activity feed."""
+    if get_setting("dm_events_backfilled"):
+        return 0
+    first_live = _db.execute(
+        "SELECT MIN(ts) FROM events WHERE kind IN ('dm_reply','contact_shared')"
+    ).fetchone()[0] or time.time()
+    teams = [i for i in published_interviews() if i.get("contact_public") and _usable(i.get("contact"))]
+    rows = _db.execute(
+        "SELECT ts, text FROM dm_messages WHERE role='assistant' AND ts < ? ORDER BY ts", (first_live,)
+    ).fetchall()
+    with _lock:
+        for ts, text in rows:
+            shared = next((i for i in teams if f"{i['team']} ({i['project']}): {i['contact']}" in (text or "")), None)
+            kind, detail = ("contact_shared", f"got {shared['team']}'s public contact") if shared else ("dm_reply", "asked a question → answered")
+            _db.execute("INSERT INTO events (ts, kind, who, detail, latency) VALUES (?,?,?,?,?)", (ts, kind, None, detail, None))
+        _db.commit()
+    set_setting("dm_events_backfilled", "1")
+    return len(rows)
+
+
 def dashboard_data() -> dict:
     def q(sql: str, *a):
         return _db.execute(sql, a).fetchall()
@@ -329,9 +360,12 @@ def dashboard_data() -> dict:
         "stats": {
             "teams": len(items),
             "people": len(lead_rows),
-            "dms": q("SELECT COUNT(*) n FROM events WHERE kind IN ('comment_dm','dm_reply')")[0]["n"],
+            # DM replies come from the stored conversations (complete since the concierge started);
+            # comment-triggered DMs are not part of a stored conversation, so they come from events.
+            "dms": q("SELECT COUNT(*) n FROM dm_messages WHERE role='assistant'")[0]["n"]
+            + q("SELECT COUNT(*) n FROM events WHERE kind='comment_dm'")[0]["n"],
             "intros": q("SELECT COUNT(*) n FROM intro_requests")[0]["n"],
-            "contacts_shared": q("SELECT COUNT(*) n FROM events WHERE kind='contact_shared'")[0]["n"],
+            "contacts_shared": _contacts_shared(),
             "median_comment_to_dm": lats[len(lats) // 2] if lats else None,
         },
         "teams": [
