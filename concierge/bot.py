@@ -146,7 +146,7 @@ async def _ask_followups(msg, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     d = ctx.chat_data
     qa = d.setdefault("qa", [])
     if len(qa) >= event_info.MAX_INTERVIEW_QUESTIONS:
-        await _draft(msg, ctx)
+        await _ask_contact(msg, ctx)
         return
     await msg.chat.send_action("typing")
     try:
@@ -160,10 +160,22 @@ async def _ask_followups(msg, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         done, question = len(qa) >= len(fallback), (fallback[len(qa)] if len(qa) < len(fallback) else "")
     if done or not question:
         await msg.reply_text("Got enough, drafting the post…")
-        await _draft(msg, ctx)
+        await _ask_contact(msg, ctx)
         return
     d.update(stage="answers", pending_q=question)
     await msg.reply_text(f"Q{len(qa) + 1}: {question}\n\n(relay their answer · /done to draft now)")
+
+
+CONTACT_QUESTION = (
+    "Last one: how can interested people reach you? Send the LinkedIn / email / website you're OK to share "
+    "publicly, or 'skip' to keep it private (we'll then pass intro requests to you instead)."
+)
+SKIP_WORDS = {"skip", "no", "none", "non", "nope", "-", "private", "pass"}
+
+
+async def _ask_contact(msg, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    ctx.chat_data["stage"] = "contact"
+    await msg.reply_text(CONTACT_QUESTION)
 
 
 async def _draft(msg, ctx: ContextTypes.DEFAULT_TYPE, feedback: str | None = None) -> None:
@@ -192,6 +204,12 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     elif stage == "answers":
         ctx.chat_data.setdefault("qa", []).append({"q": ctx.chat_data.get("pending_q", ""), "a": msg.text})
         await _ask_followups(msg, ctx)
+    elif stage == "contact":
+        answer = msg.text.strip()
+        public = answer.lower().strip(" .!") not in SKIP_WORDS
+        ctx.chat_data.update(contact=answer if public else None, contact_public=public)
+        await msg.reply_text("Contact saved, shared on request ✅" if public else "OK, kept private. Intro requests will come to you here.")
+        await _draft(msg, ctx)
     elif stage == "rewrite":
         await _draft(msg, ctx, feedback=msg.text)
     else:
@@ -226,7 +244,8 @@ async def _publish(msg, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     caption = d["recap_caption"] if is_recap else d["draft"]["ig_caption"]
     path = store.PHOTO_DIR / f"{'recap' if is_recap else 'team'}_{int(time.time())}.jpg"
     path.write_bytes(d["photo"])
-    interview_id = None if is_recap else store.add_interview(d["draft"], str(path), caption)
+    record = {**d.get("draft", {}), "contact": d.get("contact"), "contact_public": d.get("contact_public", False)}
+    interview_id = None if is_recap else store.add_interview(record, str(path), caption)
     try:
         post_id, url = await asyncio.to_thread(_upload_and_post, str(path), caption)
     except Exception as e:  # noqa: BLE001
@@ -312,7 +331,7 @@ async def done(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     if ctx.chat_data.get("stage") != "answers":
         await msg.reply_text("No interview in progress. Send a team photo to start one.")
         return
-    await _draft(msg, ctx)
+    await _ask_contact(msg, ctx)
 
 
 async def style(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:

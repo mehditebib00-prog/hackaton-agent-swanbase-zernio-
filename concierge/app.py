@@ -122,6 +122,29 @@ def handle_comment(event: dict) -> None:
     bot.notify_owner(f"💬 @{username} commented: {c.get('text')}\n→ interests: {', '.join(interests) or '-'}\n→ DM sent: {wants_dm}")
 
 
+def _handle_contact(r, reply: str, text: str, username: str | None, uid: str | None) -> str:
+    """Share a team's public contact (exact, from the DB) or record an intro request."""
+    if r is None:
+        return reply
+    team_id = r.contact_team_id
+    if team_id:
+        iv = store.interview(team_id)
+        if iv and iv.get("contact_public") and iv.get("contact"):
+            return f"{reply}\n\n{iv['team']} ({iv['project']}): {iv['contact']}"
+        if iv:
+            store.set_pending_intro(username, uid, team_id)
+    target = team_id or store.pending_intro(username, uid)
+    given = (r.requester_contact or "").strip()
+    # Only accept a contact the person actually typed in this message.
+    if target and given and given.lower() in text.lower():
+        iv = store.interview(target)
+        if iv and not iv.get("contact_public"):
+            store.add_intro(target, iv["team"], username, given, text)
+            store.set_pending_intro(username, uid, None)
+            bot.notify_owner(f"🤝 Intro request for {iv['team']} ({iv['project']})\nFrom @{username}: {given}\n“{text[:200]}”")
+    return reply
+
+
 def handle_message(event: dict) -> None:
     m = event.get("message") or {}
     if (event.get("metadata") or {}).get("standby") or m.get("direction") != "incoming":
@@ -151,6 +174,7 @@ def handle_message(event: dict) -> None:
         return
     sent = store.sent_links(username, uid)
     wants_human = False
+    r = None
     try:
         r = llm.dm_answer(history, text, username, store.knowledge_base(), sent)
         reply, interests, wants_human = r.reply, r.interests, r.wants_human
@@ -160,6 +184,7 @@ def handle_message(event: dict) -> None:
     reply, removed = guard.clean(reply, sent)
     if removed:
         log.warning("guard removed links: %s", removed)
+    reply = _handle_contact(r if not isinstance(r, Exception) else None, reply, text, username, uid)
     try:
         zernio.send_message(conv, account_id, reply)
         store.add_dm(conv, "assistant", reply)

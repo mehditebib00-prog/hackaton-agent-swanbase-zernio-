@@ -144,10 +144,26 @@ def comment_reply(comment: str, username: str | None, post_caption: str | None, 
     return _parse(CommentReply, system, text)
 
 
+CONTACT_RULES = (
+    "CONTACT REQUESTS: if they want to reach a team, set contact_team_id. Never write any team's contact details "
+    "yourself. If that team's Contact is 'shared publicly', say you're sharing it below (the system appends it). "
+    "If it is 'not public', offer an intro: ask for their email or LinkedIn so the team can reach out. When they "
+    "give their contact, copy it into requester_contact and confirm it will be passed to the team."
+)
+
+
 class DmAnswer(BaseModel):
     reply: str = Field(description="Answer, plain text, max 700 characters")
     interests: list[str] = Field(description="1-3 lowercase singular interest tags inferred from the message")
     wants_human: bool = Field(description="True if the person asks to talk to a human / the organizers / a real person")
+    contact_team_id: int | None = Field(
+        default=None,
+        description="Knowledge-base id [n] of the team the person wants to contact, meet, hire or reach; null otherwise",
+    )
+    requester_contact: str | None = Field(
+        default=None,
+        description="Email, LinkedIn, phone or handle the person wrote in their NEW message, copied verbatim; null if none",
+    )
 
 
 def dm_answer(history: list[dict], message: str, username: str | None, kb: str, sent_links: set[str] | None = None) -> DmAnswer:
@@ -155,7 +171,7 @@ def dm_answer(history: list[dict], message: str, username: str | None, kb: str, 
         EVENT_CONTEXT + "\nYou are chatting in Instagram DMs about the hackathon projects (who built what, which "
         "tools) and swanbase's next steps. Be warm and concise, plain text, no markdown, don't restate what you "
         "already said earlier in the conversation. If they ask for a human, set wants_human and tell them an "
-        "organizer will reply here soon.\n" + GROUNDING + "\n" + CTA_RULES + _context_block(kb, sent_links or set())
+        "organizer will reply here soon.\n" + CONTACT_RULES + "\n" + GROUNDING + "\n" + CTA_RULES + _context_block(kb, sent_links or set())
     )
     convo = "\n".join(f"{m['role']}: {m['text']}" for m in history)
     text = f"Conversation so far:\n{convo or '(none)'}\n\nNew message from @{username or 'unknown'}: {message}"

@@ -61,12 +61,13 @@ def add_interview(data: dict, photo_path: str, caption: str) -> int:
     with _lock:
         cur = _db.execute(
             """INSERT INTO interviews (created_at, team, project, one_liner, ai_tools, challenge,
-               quote, tags, photo_path, ig_caption, status)
-               VALUES (?,?,?,?,?,?,?,?,?,?, 'draft')""",
+               quote, tags, photo_path, ig_caption, status, contact, contact_public)
+               VALUES (?,?,?,?,?,?,?,?,?,?, 'draft', ?, ?)""",
             (
                 time.time(), data.get("team"), data.get("project"), data.get("one_liner"),
                 json.dumps(data.get("ai_tools", [])), data.get("challenge"), data.get("quote"),
                 json.dumps(data.get("tags", [])), photo_path, caption,
+                data.get("contact"), 1 if data.get("contact_public") else 0,
             ),
         )
         _db.commit()
@@ -103,7 +104,8 @@ def knowledge_base() -> str:
         lines.append(
             f"[{i['id']}] Team: {i['team']} | Project: {i['project']} | {i['one_liner']}\n"
             f"    AI tools: {', '.join(i['ai_tools'])} | Hardest part: {i['challenge']}\n"
-            f"    Quote: \"{i['quote']}\" | Tags: {', '.join(i['tags'])} | Post: {i['ig_url'] or 'n/a'}"
+            f"    Quote: \"{i['quote']}\" | Tags: {', '.join(i['tags'])} | Post: {i['ig_url'] or 'n/a'}\n"
+            f"    Contact: {'shared publicly (the system appends it)' if i.get('contact_public') else 'not public (offer an intro)'}"
         )
     return "\n".join(lines)
 
@@ -221,7 +223,7 @@ def export_csv() -> dict[str, bytes]:
     import io
 
     out = {}
-    for name, rows in (("interviews.csv", published_interviews()), ("leads.csv", leads())):
+    for name, rows in (("interviews.csv", published_interviews()), ("leads.csv", leads()), ("intros.csv", intros())):
         buf = io.StringIO()
         if rows:
             w = csv.DictWriter(buf, fieldnames=list(rows[0].keys()))
@@ -230,3 +232,49 @@ def export_csv() -> dict[str, bytes]:
                 w.writerow({k: _csv_safe(json.dumps(v) if isinstance(v, list) else v) for k, v in r.items()})
         out[name] = buf.getvalue().encode()
     return out
+
+
+# ---------- contact / intros ----------
+
+for _col, _type in (("contact", "TEXT"), ("contact_public", "INTEGER DEFAULT 0")):
+    try:
+        _db.execute(f"ALTER TABLE interviews ADD COLUMN {_col} {_type}")
+    except sqlite3.OperationalError:
+        pass  # column already exists
+_db.execute(
+    """CREATE TABLE IF NOT EXISTS intro_requests (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, created_at REAL, interview_id INTEGER, team TEXT,
+        requester TEXT, requester_contact TEXT, message TEXT, status TEXT)"""
+)
+_db.commit()
+
+
+def interview(interview_id: int) -> dict | None:
+    for i in published_interviews():
+        if i["id"] == interview_id:
+            return i
+    return None
+
+
+def add_intro(interview_id: int, team: str, requester: str | None, contact: str, message: str) -> int:
+    with _lock:
+        cur = _db.execute(
+            "INSERT INTO intro_requests (created_at, interview_id, team, requester, requester_contact, message, status) "
+            "VALUES (?,?,?,?,?,?, 'new')",
+            (time.time(), interview_id, team, requester, contact, message),
+        )
+        _db.commit()
+        return int(cur.lastrowid or 0)
+
+
+def intros() -> list[dict]:
+    return [dict(r) for r in _db.execute("SELECT * FROM intro_requests ORDER BY id").fetchall()]
+
+
+def set_pending_intro(username: str | None, user_id: str | None, interview_id: int | None) -> None:
+    set_setting(f"pending_intro:{_person(username, user_id)}", str(interview_id or ""))
+
+
+def pending_intro(username: str | None, user_id: str | None) -> int | None:
+    v = get_setting(f"pending_intro:{_person(username, user_id)}")
+    return int(v) if v else None
