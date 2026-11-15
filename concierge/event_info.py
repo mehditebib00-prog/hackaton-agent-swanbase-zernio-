@@ -9,6 +9,42 @@ from zoneinfo import ZoneInfo
 
 PARIS = ZoneInfo("Europe/Paris")
 
+# ---- Event config: change this block for the next event; prompts read it, no code changes needed.
+EVENT = {
+    "name": "Social GTM Agents Hackathon",
+    "organizer": "swanbase",
+    "partners": ["Zernio"],
+    "date": "15 Nov 2026",
+    "place": "Paris",
+    "audience": "about 30 builders (developers, growth marketers, founders)",
+    "theme": "build in one day an AI agent that does go-to-market on social media",
+    # Tools the organizers provide; interviews may mention them but never steer toward them.
+    "featured_tools": ["Zernio social API / MCP"],
+    "hashtags": ["#SocialGTMHackathon", "#swanbase", "#Zernio"],
+}
+
+# Interview tuning
+MAX_INTERVIEW_QUESTIONS = 5
+STYLE_PRESETS = {
+    "journalist": "a curious tech journalist: concrete, specific, digs into the 'how' and the surprising detail",
+    "casual": "a friendly peer at the coffee machine: light, warm, short questions",
+    "investor": "a sharp early-stage investor: who is the customer, why now, what proof, what's next",
+    "storyteller": "a storyteller: the moment it clicked, the struggle, the people behind it",
+}
+DEFAULT_STYLE = "journalist"
+
+
+def event_context() -> str:
+    e = EVENT
+    return (
+        f"Event: '{e['name']}' by {e['organizer']}"
+        + (f" with {', '.join(e['partners'])}" if e["partners"] else "")
+        + f", {e['place']}, {e['date']}. {e['audience'].capitalize()} {e['theme']}. "
+        f"Tools provided by the organizers: {', '.join(e['featured_tools']) or 'none'}. "
+        "You are the event's AI concierge: you interview teams, publish their stories on Instagram, "
+        "and answer people in comments and DMs about the projects."
+    )
+
 CTAS = [
     {
         "priority": 1,

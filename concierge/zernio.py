@@ -126,6 +126,27 @@ def get_post(post_id: str) -> dict:
     return res.get("post", res)
 
 
+def conversation_history(conversation_id: str, account_id: str, limit: int = 13) -> list[dict]:
+    """Latest messages of a DM thread, oldest first, as [{'role', 'text'}].
+
+    Zernio's inbox is the source of truth: it includes the comment-triggered private
+    reply and anything a human sent from the Zernio inbox.
+    """
+    with _client() as c:
+        res = _check(
+            c.get(
+                f"/inbox/conversations/{conversation_id}/messages",
+                params={"accountId": account_id, "sortOrder": "desc", "limit": limit},
+            )
+        )
+    msgs = []
+    for m in reversed(res.get("messages", [])):
+        text = (m.get("message") or "").strip()
+        if text:
+            msgs.append({"role": "user" if m.get("direction") == "incoming" else "assistant", "text": text})
+    return msgs
+
+
 def send_message(conversation_id: str, account_id: str, message: str) -> dict:
     with _client() as c:
         return _check(

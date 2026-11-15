@@ -134,7 +134,14 @@ def handle_message(event: dict) -> None:
     conv = m["conversationId"]
     account_id = (event.get("account") or {}).get("accountId") or _account()
     log.info("dm from=@%s latency=%ss text=%r", username, _latency(m.get("sentAt")), text)
-    history = store.dm_history(conv)
+    try:
+        history = zernio.conversation_history(conv, account_id)
+        # The thread already contains the message we are answering; drop it from the history.
+        if history and history[-1]["role"] == "user" and history[-1]["text"] == text.strip():
+            history = history[:-1]
+    except Exception as e:  # noqa: BLE001
+        log.warning("zernio history failed, using local copy: %s", e)
+        history = store.dm_history(conv)
     store.add_dm(conv, "user", text)
     if store.is_handed_off(username, uid):
         bot.notify_owner(f"🙋 (human mode) @{username}: {text}\nReply in the Zernio inbox. /resume {username} to hand back to the bot.")

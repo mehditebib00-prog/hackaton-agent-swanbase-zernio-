@@ -1,6 +1,6 @@
 """Telegram interview bot (owner only).
 
-Flow: photo (+ caption note) -> follow-up questions -> owner answers in one message
+Flow: photo (+ caption note) -> adaptive questions, one at a time (max 5, /done to stop early)
 -> Claude drafts the Instagram post -> Publish / Rewrite / Drop buttons -> Zernio publishes.
 Commands: /start (claim ownership or request access), /allow <id> (owner), /recap, /stats,
 /export, /resume <ig username>, /cancel.
@@ -22,7 +22,7 @@ from telegram.ext import (
     filters,
 )
 
-from concierge import llm, media, store, zernio
+from concierge import event_info, llm, media, store, zernio
 
 log = logging.getLogger("bot")
 OWNER_KEY = "telegram_owner_id"
@@ -136,21 +136,40 @@ async def on_photo(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await _ask_followups(msg, ctx)
 
 
+def _style() -> str:
+    key = store.get_setting("interview_style") or event_info.DEFAULT_STYLE
+    return event_info.STYLE_PRESETS.get(key, key)  # a preset name or a custom free-text style
+
+
 async def _ask_followups(msg, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    """Ask the next adaptive question, or move to drafting when the interview is complete."""
+    d = ctx.chat_data
+    qa = d.setdefault("qa", [])
+    if len(qa) >= event_info.MAX_INTERVIEW_QUESTIONS:
+        await _draft(msg, ctx)
+        return
     await msg.chat.send_action("typing")
     try:
-        qs = await asyncio.to_thread(llm.follow_up_questions, ctx.chat_data["photo"], ctx.chat_data["note"])
+        nq = await asyncio.to_thread(
+            llm.next_question, d["photo"], d["note"], qa, _style(), event_info.MAX_INTERVIEW_QUESTIONS
+        )
+        done, question = nq.done, nq.question.strip()
     except Exception as e:  # noqa: BLE001
-        log.error("follow_up_questions failed: %s", e)
-        qs = ["What does it do, and for whom?", "Which AI tools / Zernio features do you use?", "Hardest moment so far?"]
-    ctx.chat_data.update(stage="answers", questions=qs)
-    await msg.reply_text("Ask them:\n\n" + "\n".join(f"{i+1}. {q}" for i, q in enumerate(qs)) + "\n\nThen send me all their answers in one message.")
+        log.error("next_question failed: %s", e)
+        fallback = ["What did you build, and for whom?", "How does it work under the hood?", "What was the hardest moment so far?"]
+        done, question = len(qa) >= len(fallback), (fallback[len(qa)] if len(qa) < len(fallback) else "")
+    if done or not question:
+        await msg.reply_text("Got enough, drafting the post…")
+        await _draft(msg, ctx)
+        return
+    d.update(stage="answers", pending_q=question)
+    await msg.reply_text(f"Q{len(qa) + 1}: {question}\n\n(relay their answer · /done to draft now)")
 
 
 async def _draft(msg, ctx: ContextTypes.DEFAULT_TYPE, feedback: str | None = None) -> None:
     await msg.chat.send_action("typing")
     d = ctx.chat_data
-    qa = "\n".join(f"Q{i+1}: {q}" for i, q in enumerate(d.get("questions", []))) + f"\nAnswers: {d.get('answers', '')}"
+    qa = "\n".join(f"Q: {x['q']}\nA: {x['a']}" for x in d.get("qa", [])) or "(no follow-up answers)"
     try:
         draft = await asyncio.to_thread(llm.draft_post, d["photo"], d["note"], qa, feedback)
     except Exception as e:  # noqa: BLE001
@@ -171,8 +190,8 @@ async def on_text(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
         ctx.chat_data["note"] = msg.text
         await _ask_followups(msg, ctx)
     elif stage == "answers":
-        ctx.chat_data["answers"] = msg.text
-        await _draft(msg, ctx)
+        ctx.chat_data.setdefault("qa", []).append({"q": ctx.chat_data.get("pending_q", ""), "a": msg.text})
+        await _ask_followups(msg, ctx)
     elif stage == "rewrite":
         await _draft(msg, ctx, feedback=msg.text)
     else:
@@ -286,6 +305,30 @@ async def text_router(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
     await on_text(update, ctx)
 
 
+async def done(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not _is_member(update) or msg is None:
+        return
+    if ctx.chat_data.get("stage") != "answers":
+        await msg.reply_text("No interview in progress. Send a team photo to start one.")
+        return
+    await _draft(msg, ctx)
+
+
+async def style(update: Update, ctx: ContextTypes.DEFAULT_TYPE) -> None:
+    msg = update.message
+    if not _is_member(update) or msg is None:
+        return
+    arg = " ".join(ctx.args or []).strip()
+    if not arg:
+        current = store.get_setting("interview_style") or event_info.DEFAULT_STYLE
+        presets = "\n".join(f"• {k}: {v}" for k, v in event_info.STYLE_PRESETS.items())
+        await msg.reply_text(f"Current style: {current}\n\nPresets:\n{presets}\n\nUse /style <preset> or /style <your own description>.")
+        return
+    store.set_setting("interview_style", arg[:300])
+    await msg.reply_text(f"Interview style set to: {event_info.STYLE_PRESETS.get(arg, arg)}")
+
+
 def build_application() -> Application:
     app = Application.builder().token(os.environ["TELEGRAM_BOT_TOKEN"]).build()
     app.add_handler(CommandHandler("start", start))
@@ -295,6 +338,8 @@ def build_application() -> Application:
     app.add_handler(CommandHandler("allow", allow))
     app.add_handler(CommandHandler("resume", resume))
     app.add_handler(CommandHandler("export", export))
+    app.add_handler(CommandHandler("done", done))
+    app.add_handler(CommandHandler("style", style))
     app.add_handler(MessageHandler(filters.PHOTO, on_photo))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, text_router))
     app.add_handler(CallbackQueryHandler(on_button))
