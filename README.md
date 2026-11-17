@@ -1,120 +1,164 @@
+<div align="center">
+
 # Social GTM Concierge
 
-An AI concierge that runs social-media go-to-market for an event, built on the [Zernio](https://zernio.com) social API and [Claude](https://www.anthropic.com) for the **Social GTM Agents Hackathon** (swanbase × Zernio, Paris, 15 Nov 2026).
+**An AI-powered event concierge that turns live team interviews into Instagram content and converts engagement into warm leads — built on [Zernio](https://zernio.com) + [Claude](https://www.anthropic.com).**
 
-The organizer walks around the room, sends a team photo to a Telegram bot and relays a few questions. The concierge turns each interview into an Instagram post, publishes it through Zernio, then answers everyone who comments or DMs: it recommends the most relevant projects, answers questions from the interviews, introduces people to teams and points them to the organizer's next event.
+[![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![FastAPI](https://img.shields.io/badge/FastAPI-webhooks-009688?logo=fastapi&logoColor=white)](https://fastapi.tiangolo.com/)
+[![Claude](https://img.shields.io/badge/Claude-Opus%205.5-CC785C)](https://www.anthropic.com)
+[![Zernio](https://img.shields.io/badge/Zernio-social%20API-111827)](https://zernio.com)
+[![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)](tests/)
 
-中文说明见 [README_zh.md](README_zh.md).
+*Built for the **Social GTM Agents Hackathon** (swanbase × Zernio, Paris · 15 Nov 2026)*  
+[中文说明](README_zh.md)
 
-## How it works
+</div>
 
+---
+
+## ✨ What it does
+
+Walk the room with a Telegram bot in your pocket: snap a team photo, relay a few answers, and let the concierge handle the rest.
+
+- **🎙️ Interview → Post** — Adaptive, style-configurable interview in Telegram; Claude drafts a structured record + Instagram caption and publishes via Zernio.
+- **💬 Engage → Convert** — Replies to Instagram comments, follows up in DMs with the most relevant projects, answers from published interview knowledge only.
+- **🤝 Intro & CTAs** — Shares public team contacts verbatim from the DB or routes intro requests to the organizer; serves configurable, expiring CTAs.
+- **📊 Observe** — Local-only live dashboard for teams, activity, interests, and comment→DM latency.
+
+## 🔄 How it works
+
+```mermaid
+flowchart LR
+    TG[Telegram\norganizer] -->|photo + answers| BOT[bot.py]
+    BOT --> LLM1[Claude: interview + draft]
+    LLM1 -->|Publish| ZP[Zernio → Instagram]
+
+    IG[Instagram\ncomment / DM] --> ZW[Zernio webhook]
+    ZW --> APP[app.py]
+    APP --> LLM2[Claude: grounded reply]
+    LLM2 -->|private reply / DM| ZP
+    APP --> G[guard · contacts · intros]
+    APP --> D[(SQLite\nknowledge base)]
+    APP --> DASH[Local dashboard]
+    BOT --> D
 ```
-Telegram (organizer) ─▶ bot.py ─▶ Claude: adaptive interview + draft ─▶ ✅ Publish ─▶ Zernio ─▶ Instagram
-                                                                                   │
-Instagram comment / DM ─▶ Zernio webhook ─▶ app.py ─▶ Claude (reads knowledge base) ┴─▶ Zernio private reply / DM
-                                                    └─▶ guard (link whitelist) · intros · Telegram alerts · dashboard
+
+## 🛡️ Guardrails
+
+| Area | Behavior |
+|---|---|
+| **Grounding** | Answers come only from published interviews and `concierge/event_info.py` (structured outputs for every Claude call). |
+| **Link safety** | Non-whitelisted URLs are stripped in code before sending; each link sent at most once per person. |
+| **Contacts** | Shared only when public & valid; requester contact saved only if explicitly provided. Intro flow for private teams. |
+| **Loop/abuse guard** | Skips repeated/bot-marked messages, HMAC-verified & de-duped webhooks, 30 auto-replies/person/day, `/resume` handoff. |
+| **Privacy** | Dashboard is localhost-only, shortens usernames, hides contact details. `data/` is git-ignored (photos/usernames/contacts). Telegram access: owner + allow-list. |
+
+## 🧱 Project structure
+
+```text
+concierge/
+  run.py          # one-command start/stop: app + tunnel + webhook
+  app.py          # FastAPI: Zernio webhooks, guards, intros; starts Telegram bot
+  bot.py          # Telegram interview bot and commands
+  llm.py          # Claude structured calls (interview, draft, replies, recap)
+  event_info.py   # event config, CTAs, interview styles (edit per event)
+  guard.py        # link whitelist          contacts.py: contact extraction
+  store.py        # SQLite: interviews, leads, DM history, intros, events
+  dashboard.py    # local-only live dashboard (+ dashboard.html)
+  media.py        # Instagram image prep and recap collage
+  zernio.py       # Zernio REST client
+probe/setup.py    # CLI: webhooks, accounts, webhook secret
+tests/            # pytest suite (no network, no live DB writes)
 ```
 
-1. **Interview (Telegram).** Send a team photo with a one-line caption. Claude asks one question at a time (up to 5, `/done` to stop early) in a configurable style, then asks how people may contact the team and whether that is public.
-2. **Draft and publish.** Claude writes the caption and a structured record. Review it with ✅ Publish / ✏️ Rewrite / 🗑 Drop; Publish posts to Instagram through Zernio.
-3. **Engage (Instagram).** A comment triggers a public reply plus a personal DM recommending the two most relevant projects. The DM thread continues with answers grounded in the published interviews; the conversation history is read from the Zernio inbox.
-4. **Convert.** People get the organizer's next step (configured CTAs that expire on their own). Public team contacts are shared verbatim from the database; private teams get an intro request, sent to the organizer on Telegram.
-5. **Watch.** A local live dashboard shows teams, activity, interests and the comment → DM latency.
+## 🚀 Quick start (local)
 
-## Guardrails
+### Prerequisites
 
-- **Grounding:** answers come only from published interviews and `concierge/event_info.py`; structured outputs for every Claude call.
-- **Link whitelist:** any URL that is not a published post or a configured CTA is removed in code before sending; each link is sent at most once per person.
-- **Contacts:** a contact is stored and shared only if it contains a real email, link, @handle or phone number; a requester's contact is saved only if they actually typed it.
-- **Loop guard:** repeated messages and bot-marked messages (`[echo]`, `auto-reply:` …) are not answered.
-- **Limits:** 30 automatic replies per person per day; "talk to a human" pauses the bot for that person (`/resume` hands back).
-- **Webhooks:** HMAC signature check and event de-duplication.
-- **Privacy:** the dashboard only answers on localhost; it shortens usernames and never shows contact details. Telegram access is owner + allow-listed teammates.
+- macOS or Linux
+- [`uv`](https://docs.astral.sh/uv/) (installs pinned Python)
+- [`cloudflared`](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) — e.g. `brew install cloudflared`
+- [Zernio](https://zernio.com) account with an Instagram **Business/Creator** account connected + Zernio API key
+- [Telegram bot token](https://t.me/BotFather)
+- [Anthropic API key](https://console.anthropic.com/)
 
-## Requirements
-
-- macOS or Linux with [uv](https://docs.astral.sh/uv/) (it installs the pinned Python) and [cloudflared](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/) (`brew install cloudflared`)
-- A Zernio account with an Instagram **Business or Creator** account connected (Instagram Login is enough), and a Zernio API key
-- A Telegram bot token from [@BotFather](https://t.me/BotFather)
-- An Anthropic API key
-
-## Setup
+### 1) Install & configure
 
 ```bash
-git clone https://github.com/mehditebib00-prog/hackaton-agent-swanbase-zernio-.git
+git clone git@github.com:mehditebib00-prog/hackaton-agent-swanbase-zernio-.git
 cd hackaton-agent-swanbase-zernio-
 uv sync
-cp .env.example .env          # then fill in the values below
+
+cp .env.example .env
 uv run python -m probe.setup gen-secret   # writes ZERNIO_WEBHOOK_SECRET into .env
 ```
 
+Fill `.env`:
+
 | Variable | Required | Description |
-|---|---|---|
-| `ZERNIO_API_KEY` | yes | Zernio API key |
-| `ZERNIO_WEBHOOK_SECRET` | yes | Random string Zernio signs webhooks with (`gen-secret` creates it) |
-| `ZERNIO_IG_ACCOUNT_ID` | no | Pin the Instagram account; defaults to the first connected one |
-| `TELEGRAM_BOT_TOKEN` | yes | Token from @BotFather |
-| `TELEGRAM_OWNER_ID` | no | Fix the owner; otherwise the first `/start` becomes owner |
-| `ANTHROPIC_API_KEY` | yes | Claude API key |
+|---|:---:|---|
+| `ZERNIO_API_KEY` | ✅ | Zernio API key |
+| `ZERNIO_WEBHOOK_SECRET` | ✅ | Webhook signing secret (`gen-secret` creates it) |
+| `TELEGRAM_BOT_TOKEN` | ✅ | Token from @BotFather |
+| `ANTHROPIC_API_KEY` | ✅ | Claude API key |
+| `ZERNIO_IG_ACCOUNT_ID` | — | Pin Instagram account (defaults to first connected) |
+| `TELEGRAM_OWNER_ID` | — | Fix owner (otherwise first `/start` becomes owner) |
 
-`.env` values override variables already set in your shell. Never commit `.env`.
+> `.env` overrides shell vars. **Never commit `.env` or print keys/tokens.**
 
-For another event, edit `EVENT`, `CTAS` and `STYLE_PRESETS` in `concierge/event_info.py`; no other code changes are needed.
-
-## Run
-
+Verify Zernio sees your Instagram account:
 ```bash
-uv run python -m concierge.run          # app + tunnel + webhook, one command (Ctrl-C to stop)
-uv run python -m concierge.run --stop   # stop anything left running
+uv run python -m probe.setup accounts
 ```
 
-It starts the server on `:8000`, opens a cloudflared tunnel, waits until the public URL answers, points the Zernio webhook at it (creating it if needed), sends a test event and waits for the Telegram bot. Quick tunnel URLs change on every start; the script re-points the webhook each time. Logs go to `data/app.log` and `data/tunnel.log`.
+### 2) Run
 
-Dashboard: <http://localhost:8000/dashboard> (this computer only).
+```bash
+uv run python -m concierge.run
+```
 
-## Telegram commands
+- Wait for **`READY`** — starts FastAPI on `:8000`, opens a cloudflared quick tunnel, (re)points the Zernio webhook, and sends a test event.
+- **Dashboard:** http://localhost:8000/dashboard *(localhost only)*
+- **Health:** `curl http://localhost:8000/health`
+- **Logs:** `data/app.log`, `data/tunnel.log`
+- **Stop:** `Ctrl-C` or `uv run python -m concierge.run --stop`
 
-| Command | Who | What |
+> Quick-tunnel URLs change on every start; the script re-registers the webhook automatically.
+
+## 💬 Telegram commands
+
+| Command | Who | Purpose |
 |---|---|---|
-| `/start` | anyone | First user becomes owner; others request access |
-| `/allow <id>` | owner | Let a teammate interview and publish |
-| *(photo + caption)* | members | Start an interview |
-| `/done` | members | Stop questions early and draft |
-| `/style [preset or text]` | members | Interview style: journalist, casual, investor, storyteller or your own |
-| `/contact [id] [contact\|none]` | members | List teams or set/clear a team's public contact |
+| `/start` | anyone | Claim owner (first) or request access |
+| `/allow <id>` | owner | Allow a teammate to interview/publish |
+| *photo + caption* | members | Start a team interview |
+| `/done` | members | Finish early and draft |
+| `/style [preset\|text]` | members | Set style: journalist, casual, investor, storyteller, or custom |
+| `/contact [id] [contact\|none]` | members | List/set/clear a team’s public contact |
 | `/recap` | members | Collage + end-of-day recap post |
-| `/stats` · `/export` | members | Engagement summary · CSV of interviews, leads, intros (private chat only) |
+| `/stats`, `/export` | members | Engagement summary; CSV export (private chat) |
 | `/resume <ig username>` | members | Hand a conversation back to the bot |
-| `/cancel` | members | Clear the current interview |
+| `/cancel` | members | Clear current interview |
 
-## Project layout
+## 🎨 Customize for another event
 
-```
-concierge/
-  run.py          One-command start/stop: app + tunnel + webhook
-  app.py          FastAPI: Zernio webhook handlers, guards, intros; starts the Telegram bot
-  bot.py          Telegram interview bot and commands
-  llm.py          Claude calls (structured outputs): interview, drafting, comment/DM replies, recap
-  event_info.py   Event config, CTAs, interview styles (edit per event)
-  guard.py        Link whitelist; contacts.py: contact extraction
-  store.py        SQLite: interviews, leads, DM history, intros, events
-  dashboard.py/.html  Local-only live dashboard
-  media.py        Instagram image prep and recap collage
-  zernio.py       Zernio REST client
-probe/            Setup CLI: webhooks, accounts, webhook secret
-tests/            pytest suite (no network, no live database writes)
-```
+Edit **`concierge/event_info.py`** (`EVENT`, `CTAS`, `STYLE_PRESETS`) — prompts stay event-agnostic and read facts from there. No other code changes required.
 
-## Data
-
-Runtime data stays in `data/` (git-ignored): the SQLite database, team photos and logs. It contains people's photos, usernames and contact details: do not share it, and delete it to reset the event.
-
-## Tests
+## 🧪 Development
 
 ```bash
-uv run pytest
+uv run pytest -q
+uvx ruff check concierge tests --select F,B
+uvx pyright --pythonpath .venv/bin/python concierge
 ```
 
-## Built with
+Tests run without network access and without touching a live database (`tests/conftest.py` stubs event logging).
 
-Zernio (social API: publishing, comment webhooks, private replies, DMs, inbox) · Claude Opus 5.5 · FastAPI · python-telegram-bot · SQLite · cloudflared
+## 🔐 Data & privacy
+
+Runtime data lives in `data/` (git-ignored): SQLite DB, team photos, and logs. It may contain personal data — **do not commit or share it**. Delete `data/` to reset the event.
+
+## 🧰 Built with
+
+[Zernio](https://zernio.com) · [Claude Opus 5.5](https://www.anthropic.com) · [FastAPI](https://fastapi.tiangolo.com/) · [python-telegram-bot](https://python-telegram-bot.org/) · SQLite · [cloudflared](https://developers.cloudflare.com/cloudflare-one/)
